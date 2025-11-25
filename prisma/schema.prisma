@@ -14,10 +14,11 @@ enum Role {
 
 model Company {
   id        String   @id @default(uuid())
-  name      String
+  name      String   @unique
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   users     User[]
+  orders    Order[]
 }
 
 model User {
@@ -29,6 +30,7 @@ model User {
   company   Company? @relation(fields: [companyId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  orders    Order[]
 }
 
 model Product {
@@ -36,8 +38,91 @@ model Product {
   name        String
   description String
   price       Decimal
+  msrp        Decimal?
   sku         String   @unique
-  inventory   Int
+  stock       Int
+  image       String?
+  images      String[]
+  specifications Json?
+  status      String   @default("DRAFT")
+  tags        String[]
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  filterOptions FilterOption[]
+  packagingOptions PackagingOption[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  items       OrderItem[]
+}
+
+model PackagingOption {
+  id        String   @id @default(uuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  name      String
+  quantity  Int
+  price     Decimal
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  slug      String    @unique
+  products  Product[]
+  filterGroups FilterGroup[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model FilterGroup {
+    id          String    @id @default(uuid())
+    name        String
+    categories  Category[]
+    options     FilterOption[]
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
+}
+
+model FilterOption {
+    id            String      @id @default(uuid())
+    value         String
+    filterGroup   FilterGroup @relation(fields: [filterGroupId], references: [id], onDelete: Cascade)
+    filterGroupId String
+    products      Product[]
+    createdAt     DateTime    @default(now())
+    updatedAt     DateTime    @updatedAt
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  COMPLETED
+  CANCELLED
+}
+
+model Order {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id])
+  companyId String
+  company   Company     @relation(fields: [companyId], references: [id])
+  total     Decimal
+  status    OrderStatus @default(PENDING)
+  items     OrderItem[]
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int
+  price     Decimal
 }
