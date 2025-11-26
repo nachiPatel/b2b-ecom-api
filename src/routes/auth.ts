@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
+import { authenticate } from '../middleware/auth';
 import { z } from 'zod';
 
 const router = express.Router();
@@ -13,6 +14,9 @@ const registerSchema = z.object({
     companyName: z.string().min(1),
     email: z.string().email(),
     password: z.string().min(6),
+    gstNumber: z.string().optional(),
+    billingAddress: z.string().optional(),
+    billingState: z.string().optional(),
 });
 
 const loginSchema = z.object({
@@ -23,11 +27,13 @@ const loginSchema = z.object({
 // Register Endpoint
 router.post('/register', async (req: Request, res: Response) => {
     try {
-        const { companyName, email, password } = registerSchema.parse(req.body);
+        console.log('Register request received:', req.body);
+        const { companyName, email, password, gstNumber, billingAddress, billingState } = registerSchema.parse(req.body);
 
         // Check if user already exists
         const existingUser = await prisma.user.findUnique({ where: { email } });
         if (existingUser) {
+            console.log('User already exists:', email);
             return res.status(400).json({ error: 'User already exists' });
         }
 
@@ -44,7 +50,10 @@ router.post('/register', async (req: Request, res: Response) => {
                 data: {
                     email,
                     password: hashedPassword,
-                    role: 'ADMIN',
+                    role: 'CLIENT', // Changed to CLIENT for new registrations
+                    gstNumber,
+                    billingAddress,
+                    billingState,
                     companyId: company.id,
                 },
             });
@@ -88,6 +97,39 @@ router.post('/login', async (req: Request, res: Response) => {
         if (error instanceof z.ZodError) {
             return res.status(400).json({ error: error.issues });
         }
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get Current User Profile
+router.get('/me', authenticate, async (req: Request, res: Response) => {
+    try {
+        const userId = (req as any).user.id;
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                id: true,
+                email: true,
+                role: true,
+                companyId: true,
+                gstNumber: true,
+                billingAddress: true,
+                billingState: true,
+                company: {
+                    select: {
+                        name: true
+                    }
+                }
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.json(user);
+    } catch (error) {
+        console.error(error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });

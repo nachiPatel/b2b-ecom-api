@@ -10,6 +10,9 @@ const prisma = new PrismaClient();
 const orderItemSchema = z.object({
     productId: z.string().uuid(),
     quantity: z.number().int().positive(),
+    packagingName: z.string().optional(),
+    unitsPerPackage: z.number().int().optional(),
+    packagingOptionId: z.string().uuid().optional(),
 });
 
 const createOrderSchema = z.object({
@@ -24,8 +27,13 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
 
         // Transaction to ensure inventory consistency
         const result = await prisma.$transaction(async (prisma) => {
-            let total = 0;
+            let subtotal = 0;
             const orderItemsData = [];
+
+            // Fetch user to get billing state
+            const fullUser = await prisma.user.findUnique({ where: { id: user.id } });
+            const userState = fullUser?.billingState?.toLowerCase();
+            const adminState = 'gujarat'; // Hardcoded as per plan
 
             for (const item of items) {
                 const product = await prisma.product.findUnique({ where: { id: item.productId } });
@@ -34,30 +42,86 @@ router.post('/', authenticate, async (req: Request, res: Response) => {
                     throw new Error(`Product not found: ${item.productId}`);
                 }
 
-                if (product.stock < item.quantity) {
+                // Determine price and units based on packaging
+                let price = product.price;
+                let unitsPerPackage = 1;
+                let packagingName = 'Unit';
+
+                if (item.packagingOptionId) {
+                    const packagingOption = await prisma.packagingOption.findUnique({
+                        where: { id: item.packagingOptionId }
+                    });
+
+                    if (packagingOption && packagingOption.productId === item.productId) {
+                        price = packagingOption.price;
+                        unitsPerPackage = packagingOption.quantity;
+                        packagingName = packagingOption.name;
+                    }
+                } else if (item.packagingName === 'Unit') {
+                    // Explicit unit
+                    unitsPerPackage = 1;
+                    packagingName = 'Unit';
+                } else {
+                    // Defaulting to Unit price
+                }
+
+                // Calculate total units to deduct
+                const unitsToDeduct = item.quantity * unitsPerPackage;
+
+                if (product.stock < unitsToDeduct) {
                     throw new Error(`Insufficient stock for product: ${product.name}`);
                 }
 
                 // Decrement stock
                 await prisma.product.update({
                     where: { id: item.productId },
-                    data: { stock: product.stock - item.quantity },
+                    data: { stock: product.stock - unitsToDeduct },
                 });
 
-                total += Number(product.price) * item.quantity;
+                const itemTotal = Number(price) * item.quantity;
+                subtotal += itemTotal;
+
                 orderItemsData.push({
                     productId: item.productId,
                     quantity: item.quantity,
-                    price: product.price,
+                    price: price,
+                    taxRate: product.taxRate, // Snapshot tax rate
+                    hsnCode: product.hsnCode,
+                    packagingName: packagingName,
+                    unitsPerPackage: unitsPerPackage
                 });
             }
+
+            // Tax Calculation
+            let taxAmount = 0;
+            let taxType = 'IGST';
+
+            if (userState === adminState) {
+                taxType = 'CGST_SGST';
+            }
+
+            // Calculate total tax (assuming flat 18% for now or using product specific if we want to be precise, 
+            // but for MVP let's calculate on subtotal if all products are 18%, 
+            // OR better: sum up tax for each item. Let's do sum up for accuracy)
+
+            // Re-calculating tax per item to be precise
+            let totalTax = 0;
+            for (const itemData of orderItemsData) {
+                const itemPrice = Number(itemData.price) * itemData.quantity;
+                const itemTax = itemPrice * (Number(itemData.taxRate) / 100);
+                totalTax += itemTax;
+            }
+
+            const grandTotal = subtotal + totalTax;
 
             // Create Order
             const order = await prisma.order.create({
                 data: {
                     userId: user.id,
                     companyId: user.companyId,
-                    total: total,
+                    total: grandTotal,
+                    taxAmount: totalTax,
+                    taxType: taxType,
                     items: {
                         create: orderItemsData,
                     },

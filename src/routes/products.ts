@@ -29,6 +29,8 @@ const createProductSchema = z.object({
     tags: z.array(z.string()).optional(),
     filterOptionIds: z.array(z.string()).optional(),
     packagingOptions: z.array(packagingOptionSchema).optional(),
+    hsnCode: z.string().optional(),
+    taxRate: z.number().optional(),
 });
 
 // Get all products (with optional category and filter filtering)
