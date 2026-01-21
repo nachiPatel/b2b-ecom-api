@@ -229,4 +229,143 @@ router.put('/:id/status', authenticate, authorize(['ADMIN']), async (req: Reques
     }
 });
 
+// Update order items (Admin only) - Handles inventory sync
+router.put('/:id', authenticate, authorize(['ADMIN']), async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { items } = req.body; // Expecting array of { id: string, quantity: number }
+
+        const result = await prisma.$transaction(async (prisma) => {
+            // 1. Fetch existing order
+            const existingOrder = await prisma.order.findUnique({
+                where: { id },
+                include: { items: true, user: true }
+            });
+
+            if (!existingOrder) {
+                throw new Error('Order not found');
+            }
+
+            // 2. Process updates
+            let subtotal = 0;
+            const updatedItemsData = [];
+
+            // We need to iterate over ALL existing items to recalculate total, 
+            // updating the ones that changed.
+            for (const existingItem of existingOrder.items) {
+                const updateData = items.find((i: any) => i.id === existingItem.id);
+                let newQuantity = existingItem.quantity;
+
+                if (updateData) {
+                    newQuantity = updateData.quantity;
+
+                    // Calculate stock difference
+                    const quantityDiff = newQuantity - existingItem.quantity;
+                    const unitsPerPackage = existingItem.unitsPerPackage || 1;
+                    const unitsDiff = quantityDiff * unitsPerPackage;
+
+                    if (unitsDiff !== 0) {
+                        const product = await prisma.product.findUnique({ where: { id: existingItem.productId } });
+                        if (!product) throw new Error(`Product not found for item ${existingItem.id}`);
+
+                        // If increasing quantity, check stock
+                        if (unitsDiff > 0 && product.stock < unitsDiff) {
+                            throw new Error(`Insufficient stock for ${product.name}. Available: ${product.stock}, Required: ${unitsDiff}`);
+                        }
+
+                        // Update stock (subtract unitsDiff: if diff is positive, we subtract. if negative, we add)
+                        await prisma.product.update({
+                            where: { id: existingItem.productId },
+                            data: { stock: product.stock - unitsDiff }
+                        });
+                    }
+
+                    // Update OrderItem
+                    await prisma.orderItem.update({
+                        where: { id: existingItem.id },
+                        data: { quantity: newQuantity }
+                    });
+                }
+
+                // Recalculate item total for order total
+                // Use toString() to ensure Decimal is correctly converted to Number
+                const priceVal = Number(existingItem.price.toString());
+                const itemTotal = priceVal * newQuantity;
+                subtotal += itemTotal;
+
+                updatedItemsData.push({
+                    ...existingItem,
+                    quantity: newQuantity,
+                    price: existingItem.price,
+                    taxRate: existingItem.taxRate
+                });
+            }
+
+            console.log('Recalculated Subtotal:', subtotal);
+
+            // 3. Recalculate Tax & Total
+            const userState = existingOrder.user.billingState?.toLowerCase();
+            const adminState = 'gujarat';
+            let taxType = 'IGST';
+            if (userState === adminState) {
+                taxType = 'CGST_SGST';
+            }
+
+            let totalTax = 0;
+            for (const item of updatedItemsData) {
+                const priceVal = Number(item.price.toString());
+                const taxRateVal = Number(item.taxRate.toString());
+
+                const itemPrice = priceVal * item.quantity;
+                const itemTax = itemPrice * (taxRateVal / 100);
+                totalTax += itemTax;
+            }
+
+            console.log('Recalculated Tax:', totalTax);
+
+            const grandTotal = subtotal + totalTax;
+            console.log('Recalculated Grand Total:', grandTotal);
+
+            if (isNaN(grandTotal)) {
+                throw new Error('Calculated Grand Total is NaN');
+            }
+
+            // 4. Update Order
+            const updatedOrder = await prisma.order.update({
+                where: { id },
+                data: {
+                    total: grandTotal,
+                    taxAmount: totalTax,
+                    taxType: taxType
+                },
+                include: {
+                    items: {
+                        include: {
+                            product: true,
+                        },
+                    },
+                    user: {
+                        select: {
+                            email: true,
+                        },
+                    },
+                    company: {
+                        select: {
+                            name: true,
+                        },
+                    },
+                },
+            });
+
+            return updatedOrder;
+        });
+
+        res.json(result);
+
+    } catch (error: any) {
+        console.error('Update order failed:', error);
+        res.status(400).json({ error: error.message || 'Failed to update order' });
+    }
+});
+
 export default router;
